@@ -1,15 +1,12 @@
-"""Gesture-Controlled Spellcasting Game: CPU webcam inference + Pygame.
+"""Shared spellcasting engine: combat rules, camera worker, sound and base view.
 
-Run: ./.venv/bin/python gesture_game_adventure.py
-Keyboard-only: ./.venv/bin/python gesture_game_adventure.py --no-camera
-Move your hand horizontally to steer; arrow keys or A/D also move.
-Space starts; P pauses; R restarts after game over; 1-5 cast; Esc quits.
+Not a launcher. Run the game with: ./.venv/bin/python arcane_adventure.py
+arcane_adventure.py extends SpellGame/GameView with encounters, upgrades and props.
 Includes an illustrated arena in assets/images; characters and sound are generated locally.
 """
 
 from __future__ import annotations
 
-import argparse
 import base64
 import io
 from collections import deque
@@ -151,7 +148,8 @@ class CameraWorker:
     The rendering loop never waits for detection or grows a video-frame queue.
     """
 
-    def __init__(self, camera=0):
+    def __init__(self, camera=0, motion=False):
+        self.motion = motion
         self.camera = camera
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -173,6 +171,8 @@ class CameraWorker:
         with self.lock:
             self.generation += 1
             self.events.clear()
+            self.prediction = None
+            self.updated_at = 0
             if self.process is not None and self.process.poll() is None:
                 try:
                     self.process.stdin.write(
@@ -201,7 +201,8 @@ class CameraWorker:
                     str(ROOT / "game_camera.py"),
                     "--camera",
                     str(self.camera),
-                ],
+                ]
+                + (["--motion"] if self.motion else []),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 text=True,
@@ -230,6 +231,14 @@ class CameraWorker:
                     self.prediction = SimpleNamespace(**packet, preview_image=image)
                     self.updated_at = packet["observed_at"]
                     self.status = packet["status"]
+                    if packet.get("motion"):
+                        self.events.append(
+                            (
+                                "motion:" + packet["motion"],
+                                self.updated_at,
+                                packet["generation"],
+                            )
+                        )
                     if packet["action"] is not None:
                         self.events.append(
                             (packet["action"], self.updated_at, packet["generation"])
@@ -295,6 +304,7 @@ class SpellGame:
         self.perfect_until = 0
         self.hurt_until = 0
         self.parries = 0
+        self.combo_window = 3
         self.combo_count = 0
         self.combo_spell = None
         self.combo_at = float("-inf")
@@ -471,6 +481,43 @@ class SpellGame:
                     self.dodges += 1
                     self.mana = min(100, self.mana + 3)
 
+    def damage_enemy(self, enemy, damage=1, kind="Fireball"):
+        self.defeat(enemy, COLORS.get(kind, COLORS["Fireball"]))
+
+    def enemy_target(self, enemy):
+        return self.player
+
+    def aim_targets(self, origin):
+        targets = [enemy for enemy in self.enemies if enemy.y < origin.y]
+        return targets + ([self.boss] if self.boss else [])
+
+    def spawn_enemy(self):
+        self.spawn_count += 1
+        self.enemies.append(
+            Enemy(
+                self.rng.uniform(55, ARENA_WIDTH - 55),
+                -25,
+                46 + (self.level - 1) * 11,
+                phase=self.rng.uniform(0, math.tau),
+                shooter=self.spawn_count % 3 == 0,
+            )
+        )
+
+    def enemy_contact(self, enemy):
+        if (
+            enemy.position.distance_to(self.player + pygame.Vector2(0, -30))
+            <= enemy.radius + 24
+        ):
+            if self.elapsed < self.shield_until:
+                self.defeat(enemy, COLORS["Shield"])
+            else:
+                self.enemies.remove(enemy)
+                self.hurt(20)
+        elif enemy.y > 655:
+            self.enemies.remove(enemy)
+            self.dodges += 1
+            self.mana = min(100, self.mana + 3)
+
     def cast(self, spell):
         if self.state != "playing" or spell not in COSTS:
             return False
@@ -487,7 +534,7 @@ class SpellGame:
         self.notify(f"{spell} cast!")
         color = COLORS[spell]
         combo = None
-        if self.elapsed - self.combo_at <= 3:
+        if self.elapsed - self.combo_at <= self.combo_window:
             combo = {
                 ("Telekinesis", "Fireball"): "Meteor Burst",
                 ("Shield", "Lightning"): "Storm Counter",
@@ -498,13 +545,14 @@ class SpellGame:
             self.combo_name, self.combo_until = combo, self.elapsed + 2
             self.combo_spell = None
             self.notify(combo + "!")
-        elif spell != self.combo_spell or self.elapsed - self.combo_at > 3:
+        elif (
+            spell != self.combo_spell
+            or self.elapsed - self.combo_at > self.combo_window
+        ):
             self.combo_spell, self.combo_at = spell, self.elapsed
         if spell == "Fireball":
             origin = self.player + pygame.Vector2(0, -30)
-            targets = [enemy for enemy in self.enemies if enemy.y < origin.y]
-            if self.boss:
-                targets.append(self.boss)
+            targets = self.aim_targets(origin)
             direction = pygame.Vector2(0, -1)
             if targets:
                 target = min(targets, key=lambda e: e.position.distance_to(origin))
@@ -536,8 +584,14 @@ class SpellGame:
             self.rings.append([self.player.copy(), 28.0, 1.0, color])
         elif spell == "Lightning":
             origin = self.player.copy()
+            visited = []
+            self.lightning_visited = visited
             for _ in range(min(5 if combo else 3, len(self.enemies))):
-                enemy = min(self.enemies, key=lambda e: e.position.distance_to(origin))
+                candidates = [enemy for enemy in self.enemies if enemy not in visited]
+                if not candidates:
+                    break
+                enemy = min(candidates, key=lambda e: e.position.distance_to(origin))
+                visited.append(enemy)
                 target = enemy.position
                 points = [origin.copy()]
                 for index in range(1, 6):
@@ -546,7 +600,7 @@ class SpellGame:
                     points.append(point)
                 points.append(target.copy())
                 self.bolts.append([points, 0.3])
-                self.defeat(enemy, color)
+                self.damage_enemy(enemy, 3, "Lightning")
                 origin = target
             self.damage_boss(5 if combo else 3)
             if combo:
@@ -564,7 +618,7 @@ class SpellGame:
             self.rings.append([self.player.copy(), 40.0, 0.65, color])
         elif spell == "Ultimate":
             for enemy in self.enemies[:]:
-                self.defeat(enemy, color)
+                self.damage_enemy(enemy, 8, "Ultimate")
             self.damage_boss(8)
             self.hostile_orbs.clear()
             self.flash = 0.45
@@ -613,22 +667,13 @@ class SpellGame:
         self.damage_flash = max(0.0, self.damage_flash - dt)
         self.spawn_timer -= dt
         if self.spawn_timer <= 0:
-            self.spawn_count += 1
-            self.enemies.append(
-                Enemy(
-                    self.rng.uniform(55, ARENA_WIDTH - 55),
-                    -25,
-                    46 + (self.level - 1) * 11,
-                    phase=self.rng.uniform(0, math.tau),
-                    shooter=self.spawn_count % 3 == 0,
-                )
-            )
+            self.spawn_enemy()
             self.spawn_timer = max(0.55, 1.65 * 0.86 ** (min(self.level, 8) - 1)) * (
                 1.6 if self.boss else 1
             )
         for enemy in self.enemies:
             enemy.y += enemy.speed * dt
-            enemy.x += (self.player.x - enemy.x) * 0.22 * dt
+            enemy.x += (self.enemy_target(enemy).x - enemy.x) * 0.22 * dt
         self.update_threats(dt)
         for projectile in self.projectiles[:]:
             old = projectile.position.copy()
@@ -646,31 +691,55 @@ class SpellGame:
             )
             if hit:
                 impact = hit.position.copy()
-                self.defeat(hit, COLORS["Fireball"])
+                self.damage_enemy(
+                    hit, projectile.damage, getattr(projectile, "kind", "Fireball")
+                )
                 if projectile.splash:
                     for enemy in self.enemies[:]:
                         if enemy.position.distance_to(impact) <= projectile.splash:
-                            self.defeat(enemy, COLORS["Fireball"])
+                            self.damage_enemy(
+                                enemy,
+                                projectile.damage,
+                                getattr(projectile, "kind", "Fireball"),
+                            )
                     if (
                         self.boss
                         and self.boss.position.distance_to(impact)
                         <= projectile.splash + self.boss.radius
                     ):
-                        self.damage_boss(projectile.damage)
+                        self.damage_boss(
+                            projectile.damage,
+                            **(
+                                {"kind": getattr(projectile, "kind", "Fireball")}
+                                if hasattr(self, "stage")
+                                else {}
+                            ),
+                        )
                     self.rings.append([impact, 20, 0.3, COLORS["Fireball"]])
                 self.projectiles.remove(projectile)
             elif self.boss and self.segment_hit(
                 old, projectile.position, self.boss, projectile.radius
             ):
                 impact = self.boss.position.copy()
-                self.damage_boss(projectile.damage)
+                self.damage_boss(
+                    projectile.damage,
+                    **(
+                        {"kind": getattr(projectile, "kind", "Fireball")}
+                        if hasattr(self, "stage")
+                        else {}
+                    ),
+                )
                 if projectile.splash:
                     for enemy in self.enemies[:]:
                         if (
                             enemy.position.distance_to(impact)
                             <= projectile.splash + enemy.radius
                         ):
-                            self.defeat(enemy, COLORS["Fireball"])
+                            self.damage_enemy(
+                                enemy,
+                                projectile.damage,
+                                getattr(projectile, "kind", "Fireball"),
+                            )
                 self.projectiles.remove(projectile)
             elif not (
                 -60 <= projectile.position.x <= ARENA_WIDTH + 60
@@ -680,21 +749,9 @@ class SpellGame:
             else:
                 self.burst(projectile.position, COLORS["Fireball"], 2, 45)
         for enemy in self.enemies[:]:
-            if (
-                enemy.position.distance_to(self.player + pygame.Vector2(0, -30))
-                <= enemy.radius + 24
-            ):
-                if self.elapsed < self.shield_until:
-                    self.defeat(enemy, COLORS["Shield"])
-                else:
-                    self.enemies.remove(enemy)
-                    self.hurt(20)
-                    if self.state == "gameover":
-                        break
-            elif enemy.y > 655:
-                self.enemies.remove(enemy)
-                self.dodges += 1
-                self.mana = min(100, self.mana + 3)
+            self.enemy_contact(enemy)
+            if self.state == "gameover":
+                break
         for particle in self.particles:
             particle.life -= dt
             particle.position += particle.velocity * dt
@@ -876,7 +933,6 @@ class GameView:
     @staticmethod
     def make_icon(spell):
         s = pygame.Surface((80, 80), pygame.SRCALPHA)
-        color = COLORS[spell]
         if spell == "Fireball":
             pygame.draw.polygon(
                 s,
@@ -1082,6 +1138,8 @@ class GameView:
                 ],
             )
         for enemy in game.enemies:
+            if getattr(enemy, "kind", "") == "boss_crystal":
+                continue
             variant = 0 if enemy.shooter else int(enemy.phase * 10) % 3
             bob = math.sin(game.elapsed * 4 + enemy.phase) * 3
             self.screen.blit(
@@ -1436,7 +1494,7 @@ class GameView:
                 (248, 170, max(1, int(374 * game.boss.hp / game.boss.max_hp)), 6),
                 border_radius=3,
             )
-        elif game.state == "playing":
+        elif game.state == "playing" and math.isfinite(game.next_boss_at):
             self.text(
                 f"Guardian arrives in {max(0, math.ceil(game.next_boss_at-game.elapsed))}s",
                 435,
@@ -1511,171 +1569,3 @@ def apply_camera_input(game, snapshot, now=None):
         and game.mana >= COSTS["Fireball"]
     ):
         game.cast("Fireball")
-
-
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--camera", type=int, default=0)
-    parser.add_argument("--no-camera", action="store_true")
-    parser.add_argument("--mute", action="store_true")
-    parser.add_argument("--seed", type=int)
-    parser.add_argument(
-        "--boss-practice",
-        action="store_true",
-        help="First boss appears after 5 seconds",
-    )
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=0,
-        help="Exit after N frames; 0 means unlimited",
-    )
-    args = parser.parse_args(argv)
-    if args.camera < 0 or args.max_frames < 0:
-        parser.error("Camera and max-frames must be nonnegative.")
-    return args
-
-
-def run(args):
-    pygame.mixer.pre_init(44100, -16, 2, 512)
-    pygame.init()
-    worker = None
-    game = None
-    frames = 0
-    frame_times = []
-    try:
-        screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Arcane Arena - Adventure Edition")
-        sound = SoundBank(args.mute)
-        game = SpellGame(sound, args.seed, boss_delay=5 if args.boss_practice else 45)
-        view = GameView(screen)
-        clock = pygame.time.Clock()
-        if not args.no_camera:
-            worker = CameraWorker(args.camera)
-            worker.start()
-
-        def reset_camera():
-            if worker:
-                worker.reset()
-
-        def primary():
-            if game.state == "paused":
-                game.state = "playing"
-            elif game.state in ("start", "gameover"):
-                game.reset()
-                sound.play("ui")
-            reset_camera()
-
-        running = True
-        while running:
-            frame_seconds = clock.tick(30) / 1000
-            dt = min(frame_seconds, 0.1)
-            if len(frame_times) < 18000:
-                frame_times.append(frame_seconds)
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
-                        running = False
-                    elif event.key == pygame.K_SPACE and game.state == "start":
-                        primary()
-                    elif event.key == pygame.K_r and game.state == "gameover":
-                        primary()
-                    elif event.key == pygame.K_p and game.state in (
-                        "playing",
-                        "paused",
-                    ):
-                        if game.state == "playing":
-                            game.state = "paused"
-                            reset_camera()
-                        else:
-                            primary()
-                    elif event.key == pygame.K_m:
-                        sound.muted = not sound.muted
-                    elif pygame.K_1 <= event.key <= pygame.K_5:
-                        game.cast(SPELLS[event.key - pygame.K_1])
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    for key, rect in view.buttons.items():
-                        if not rect.collidepoint(event.pos):
-                            continue
-                        if key == "primary":
-                            primary()
-                        elif key == "pause" and game.state in ("playing", "paused"):
-                            if game.state == "playing":
-                                game.state = "paused"
-                                reset_camera()
-                            else:
-                                primary()
-                        elif key == "mute":
-                            sound.muted = not sound.muted
-                        elif key.startswith("cast_"):
-                            game.cast(key[5:])
-                        break
-            snapshot = (None, 0, [], None, "Keyboard-only mode")
-            if worker:
-                snapshot = worker.snapshot()
-                apply_camera_input(game, snapshot)
-            keys = pygame.key.get_pressed()
-            axis = int(keys[pygame.K_RIGHT] or keys[pygame.K_d]) - int(
-                keys[pygame.K_LEFT] or keys[pygame.K_a]
-            )
-            game.keyboard_move(axis, dt)
-            before = game.state
-            game.update(dt)
-            if before != game.state:
-                reset_camera()
-            view.draw(game, snapshot, clock.get_fps(), args.no_camera, sound.muted)
-            pygame.display.flip()
-            frames += 1
-            if args.max_frames and frames >= args.max_frames:
-                running = False
-    finally:
-        if worker:
-            worker.close()
-        if game:
-            try:
-                directory = ROOT / "reports"
-                directory.mkdir(exist_ok=True)
-                report = {
-                    "score": game.score,
-                    "best_score_this_session": game.best_score,
-                    "level": game.level,
-                    "survival_seconds": round(game.elapsed, 2),
-                    "rendered_frames": frames,
-                    "average_game_fps": (
-                        round(len(frame_times) / sum(frame_times), 2)
-                        if sum(frame_times)
-                        else 0
-                    ),
-                    "spell_counts": game.cast_counts,
-                    "dodges": game.dodges,
-                    "perfect_counters": game.parries,
-                    "combos": game.combo_count,
-                    "bosses_defeated": game.bosses_defeated,
-                    "camera_enabled": not args.no_camera,
-                    "camera_error": worker.error if worker else None,
-                }
-                (directory / "game_last_run.json").write_text(
-                    json.dumps(report, indent=2) + "\n"
-                )
-            except OSError as exc:
-                print(f"Could not save game metrics: {exc}", file=sys.stderr)
-        pygame.quit()
-
-
-def main():
-    args = parse_args()
-    print(f"Starting Adventure Edition: {Path(__file__).resolve()}", flush=True)
-    try:
-        run(args)
-    except KeyboardInterrupt:
-        print("\nGame stopped.")
-    except Exception as exc:
-        print(f"Game failed: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

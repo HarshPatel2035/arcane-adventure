@@ -1,4 +1,4 @@
-"""Private camera helper for gesture_game.py; run by the game automatically.
+"""Private camera helper for spell_engine.CameraWorker; run by the game automatically.
 
 Uses JSON lines over pipes so OpenCV and Pygame never share a process on macOS.
 Only the latest camera image is used by the game. stdout is the data channel;

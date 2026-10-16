@@ -1,13 +1,22 @@
-"""Arcane Arena: a five-encounter adventure built on the tested combat engine."""
+"""Arcane Adventure - The Enchanted Grove: webcam-gesture spellcasting game.
+
+Run: ./.venv/bin/python arcane_adventure.py
+Keyboard-only: ./.venv/bin/python arcane_adventure.py --no-camera
+Move your hand horizontally to steer; arrow keys or A/D also move.
+Space starts; P pauses; R restarts after game over; 1-5 cast; Esc quits.
+Built on the shared combat engine in spell_engine.py.
+"""
 
 from __future__ import annotations
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import json
 import math
+import sys
 import time
 import pygame
-import gesture_game_adventure as base
+import spell_engine as base
 
 UPGRADES = {
     "Twin Flame": ("Two weaker fireballs instead of one.", "Fireball"),
@@ -1655,5 +1664,49 @@ def run_adventure(args):
         pygame.quit()
 
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--no-camera", action="store_true")
+    parser.add_argument("--mute", action="store_true")
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--mode", choices=("adventure", "endless"), default="adventure")
+    parser.add_argument(
+        "--companion", choices=("owl", "dragon", "spirit"), default="owl"
+    )
+    parser.add_argument(
+        "--motion",
+        action="store_true",
+        help="Enable optional sweep, circle and charged ward controls",
+    )
+    parser.add_argument(
+        "--boss-practice",
+        action="store_true",
+        help="First boss appears after 5 seconds",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        help="Exit after N frames; 0 means unlimited",
+    )
+    args = parser.parse_args(argv)
+    if args.camera < 0 or args.max_frames < 0:
+        parser.error("Camera and max-frames must be nonnegative.")
+    return args
+
+
+def main():
+    args = parse_args()
+    try:
+        run_adventure(args)
+    except KeyboardInterrupt:
+        print("\nGame stopped.")
+    except Exception as exc:
+        print(f"Game failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    run_adventure(base.parse_args())
+    sys.exit(main())
