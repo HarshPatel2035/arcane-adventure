@@ -1,0 +1,29 @@
+[project]
+name = "arcane-adventure"
+version = "1.0.0"
+description = "Webcam hand-gesture spellcasting game: MediaPipe landmarks + PyTorch classifier + Pygame."
+requires-python = ">=3.11"
+# Direct dependencies only. requirements.txt pins the exact tested versions.
+dependencies = [
+    "mediapipe>=1.1",
+    "opencv-contrib-python>=5.0",
+    "numpy>=2.0",
+    "torch>=2.4",
+    "pygame>=2.6",
+]
+
+[project.optional-dependencies]
+# Needed only for train_model.py (collect_data.py, inference.py and the game do not).
+train = ["pandas>=2.2", "scikit-learn>=1.5", "matplotlib>=3.9", "seaborn>=0.13"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+line-length = 100
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["F"]
