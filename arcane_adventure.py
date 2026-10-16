@@ -218,6 +218,9 @@ class AdventureGame(base.SpellGame):
         self.save_error = None
         self.run_recorded = False
         self.new_record = False
+        # Spell whose one-shot gesture event failed for mana/cooldown; it fires
+        # once affordable if the same pose is still held (see apply_input).
+        self.pending_cast = None
         self.spawn_scale = DIFFICULTIES[self.difficulty]["spawn"]
         self.next_boss_at = (
             5 if self.practice else float("inf") if self.mode == "adventure" else 45
@@ -322,6 +325,12 @@ class AdventureGame(base.SpellGame):
         self.profile["scores"] = board
         self.save_profile()
         return board
+
+    def spell_ready(self, spell):
+        return (
+            self.elapsed - self.last_cast[spell] >= base.COOLDOWNS[spell]
+            and self.mana + 1e-6 >= base.COSTS[spell]
+        )
 
     def begin_calibration(self):
         if self.state != "start":
@@ -587,10 +596,19 @@ class AdventureGame(base.SpellGame):
         remaining = max(
             0, base.COOLDOWNS[spell] - (self.elapsed - self.last_cast[spell])
         )
+        holding = spell == self.pending_cast
         if remaining:
-            return f"{spell}: cooldown {remaining:.1f}s"
+            return f"{spell}: " + (
+                f"keep holding, casts in {remaining:.1f}s"
+                if holding
+                else f"cooldown {remaining:.1f}s"
+            )
         if self.mana < base.COSTS[spell]:
-            return f"{spell}: need {base.COSTS[spell]} mana"
+            return f"{spell}: " + (
+                f"keep holding, casts at {base.COSTS[spell]} mana"
+                if holding
+                else f"need {base.COSTS[spell]} mana"
+            )
         return (
             spell
             + ": ready / "
@@ -1702,10 +1720,21 @@ def apply_input(game, snapshot, now=None):
             continue
         if spell.startswith("motion:"):
             game.motion_cast(spell[7:])
-        else:
-            game.cast(spell)
+        elif game.cast(spell):
+            game.pending_cast = None
+        elif game.state == "playing" and spell != "Fireball":
+            game.pending_cast = spell  # held palm already repeats fireballs
         if game.state != "playing":
             return
+    if game.pending_cast and pred.gesture_id is not None:
+        held = base.spell_for(pred.gesture_id)
+        if held != game.pending_cast:
+            game.pending_cast = None  # switched pose or idle: cancel
+        elif pred.confidence > 0.8 and game.spell_ready(held):
+            game.pending_cast = None
+            game.cast(held)
+            if game.state != "playing":
+                return
     if (
         pred.gesture_id == 0
         and pred.confidence > 0.8

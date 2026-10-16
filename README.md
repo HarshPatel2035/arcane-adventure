@@ -81,7 +81,9 @@ dependencies, with optional `train` and `dev` groups.
 | Both palms open | 5 | Ultimate | 100 |
 
 Move your hand left/right to steer. A/D or arrow keys also move. Palm fires repeatedly;
-other spells require switching poses or lowering your hands to rearm. The feedback card
+other spells cast once per pose; switch poses or lower your hands to cast again.
+If you lack mana or the spell is cooling down, keep holding the pose: it casts
+automatically once ready (switching to another pose cancels it). The feedback card
 shows the recognized spell, confidence, cooldown or missing mana. Mana regenerates at
 10/sec, and defeats/counters/dodges give additional mana. P pauses/resumes, M mutes,
 R restarts after victory/game over, Esc/Q exits.
