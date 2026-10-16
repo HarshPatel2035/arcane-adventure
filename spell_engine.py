@@ -30,6 +30,15 @@ PLAYER = pygame.Vector2(ARENA_WIDTH / 2, 560)
 SPELLS = ("Fireball", "Shield", "Lightning", "Telekinesis", "Ultimate")
 COSTS = dict(zip(SPELLS, (10, 20, 30, 15, 100)))
 COOLDOWNS = dict(zip(SPELLS, (0.45, 2.0, 1.2, 0.8, 3.0)))
+IDLE_GESTURE = 5  # optional trained "no spell" class
+
+
+def spell_for(gesture_id):
+    """Spell for a stable gesture ID, or None for idle/unknown IDs."""
+    if gesture_id is None or not 0 <= gesture_id < len(SPELLS):
+        return None
+    return SPELLS[gesture_id]
+
 COLORS = {
     "Fireball": (255, 139, 69),
     "Shield": (89, 183, 255),

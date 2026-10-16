@@ -439,7 +439,9 @@ class AdventureGame(base.SpellGame):
     def feedback_for(self, prediction):
         if prediction is None or prediction.gesture_id is None:
             return "No accepted pose. Move hand to steer."
-        spell = base.SPELLS[prediction.gesture_id]
+        spell = base.spell_for(prediction.gesture_id)
+        if spell is None:
+            return "Idle pose: no spell. Move hand to steer."
         remaining = max(
             0, base.COOLDOWNS[spell] - (self.elapsed - self.last_cast[spell])
         )
@@ -1358,7 +1360,7 @@ class AdventureView(base.GameView):
                     "Keyboard magic"
                     if no_camera
                     else (
-                        base.SPELLS[pred.gesture_id]
+                        (base.spell_for(pred.gesture_id) or "Idle (no spell)")
                         if fresh and pred.gesture_id is not None
                         else "Show your hand"
                     )

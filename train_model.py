@@ -57,7 +57,8 @@ class GestureClassifier(nn.Module):
         return self.network(features)
 
 
-def load_data(path):
+def load_data(path, holdout=False):
+    """Validate a landmark CSV. Holdout files may cover only some classes."""
     table = pd.read_csv(path)
     if list(table.columns) != HEADER:
         raise ValueError("CSV must have columns label, f0, ..., f125 in that order.")
@@ -69,12 +70,14 @@ def load_data(path):
     if not set(labels).issubset(LABELS):
         raise ValueError("Labels must be in the range 0-5.")
     missing = set(range(5)) - set(labels)
-    if missing:
+    if missing and not holdout:
         raise ValueError(f"Missing core gesture labels: {sorted(missing)}")
     features = table.iloc[:, 1:].to_numpy(dtype=np.float32)
     if not np.isfinite(features).all():
         raise ValueError("Features contain missing or nonfinite values.")
     labels = labels.astype(np.int64)
+    if holdout:
+        return features, labels
     # Exact duplicates in different splits would inflate measured accuracy.
     seen, keep, duplicates = {}, [], 0
     for index, (row, label) in enumerate(zip(features, labels)):
@@ -174,6 +177,25 @@ def evaluate(model, loader, criterion):
     return loss_sum / len(truth), accuracy_score(truth, predicted), truth, predicted
 
 
+def evaluate_holdout(model, criterion, path, class_ids, names):
+    """Score a separate recording session; this is the honest generalization number."""
+    features, original = load_data(path, holdout=True)
+    unknown = sorted(set(original.tolist()) - set(class_ids))
+    if unknown:
+        raise ValueError(f'Holdout has labels the model was not trained on: {unknown}')
+    labels = np.array([class_ids.index(int(value)) for value in original], dtype=np.int64)
+    loader = DataLoader(GestureDataset(features, labels), batch_size=256)
+    loss, accuracy, truth, predicted = evaluate(model, loader, criterion)
+    indices = list(range(len(class_ids)))
+    return dict(
+        path=str(path), samples=len(labels), accuracy=accuracy, loss=loss,
+        dataset_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        confusion_matrix=confusion_matrix(truth, predicted, labels=indices).tolist(),
+        classification_report_text=classification_report(
+            truth, predicted, labels=indices, target_names=names, zero_division=0),
+    )
+
+
 def save_plots(history, matrix, names, directory):
     import matplotlib
     matplotlib.use('Agg')
@@ -214,6 +236,8 @@ def parse_args(argv=None):
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--split', choices=['blocked', 'random'], default='blocked')
     parser.add_argument('--no-augmentation', action='store_true')
+    parser.add_argument('--holdout', type=Path,
+                        help='Separately recorded CSV (new session/person) scored after training')
     args = parser.parse_args(argv)
     if min(args.epochs, args.patience, args.batch_size, args.threads) < 1:
         parser.error('Epochs, patience, batch size and threads must be positive.')
@@ -221,6 +245,8 @@ def parse_args(argv=None):
         parser.error('Learning rate must be positive and finite.')
     if not 0 <= args.seed < 2**32:
         parser.error('Seed must be between 0 and 2**32 - 1.')
+    if args.holdout is not None and args.holdout.resolve() == args.data.resolve():
+        parser.error('--holdout must be a different recording from --data.')
     if args.data.resolve() == args.model.resolve():
         parser.error('Model output must differ from the input dataset.')
     return args
@@ -312,6 +338,9 @@ def train(args):
                    exact_duplicates_removed=duplicates, classification_report=report,
                    confusion_matrix=matrix.tolist(),
                    limitation='Same recording dataset; evaluate on new people and separate sessions.')
+    if args.holdout is not None:
+        metrics['holdout'] = evaluate_holdout(model, criterion, args.holdout, class_ids, names)
+        metrics['limitation'] = 'Holdout measures one separate recording; add more people to generalize.'
     (args.reports / 'metrics.json').write_text(json.dumps(metrics, indent=2) + '\n')
     (args.reports / 'classification_report.txt').write_text(report_text)
     pd.DataFrame(history).to_csv(args.reports / 'training_history.csv', index=False)
@@ -321,6 +350,11 @@ def train(args):
     print('\n' + report_text)
     print(f'Test accuracy: {test_accuracy:.1%} | model-only latency: {latency:.3f} ms')
     print(f'Saved best model: {args.model}\nReports: {args.reports}')
+    if args.holdout is not None:
+        holdout = metrics['holdout']
+        print(f"Holdout accuracy ({args.holdout.name}, {holdout['samples']} samples): "
+              f"{holdout['accuracy']:.1%}")
+        print(holdout['classification_report_text'])
     if test_accuracy < 0.95:
         print('Below the 95% goal: collect more varied examples for confused gestures.')
 
