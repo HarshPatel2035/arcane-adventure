@@ -7,7 +7,6 @@ Includes an illustrated arena in assets/images; characters and sound are generat
 
 from __future__ import annotations
 
-import base64
 import io
 from collections import deque
 from dataclasses import dataclass
@@ -23,6 +22,8 @@ import time
 
 import numpy as np
 import pygame
+
+from frame_protocol import read_frame
 
 ROOT = Path(__file__).resolve().parent
 WIDTH, HEIGHT, ARENA_WIDTH = 1280, 720, 870
@@ -184,13 +185,13 @@ class CameraWorker:
             self.updated_at = 0
             if self.process is not None and self.process.poll() is None:
                 try:
-                    self.process.stdin.write(
-                        json.dumps({"command": "reset", "generation": self.generation})
-                        + "\n"
-                    )
-                    self.process.stdin.flush()
+                    self._send({"command": "reset", "generation": self.generation})
                 except (OSError, BrokenPipeError):
                     pass
+
+    def _send(self, command):
+        self.process.stdin.write((json.dumps(command) + "\n").encode("utf-8"))
+        self.process.stdin.flush()
 
     def snapshot(self):
         with self.lock:
@@ -214,21 +215,16 @@ class CameraWorker:
                 + (["--motion"] if self.motion else []),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                text=True,
-                bufsize=1,
                 cwd=ROOT,
             )
             with self.lock:
                 self.process = process
-                process.stdin.write(
-                    json.dumps({"command": "reset", "generation": self.generation})
-                    + "\n"
-                )
-                process.stdin.flush()
-            for line in process.stdout:
-                if self.stop_event.is_set():
+                self._send({"command": "reset", "generation": self.generation})
+            while not self.stop_event.is_set():
+                frame = read_frame(process.stdout)
+                if frame is None:
                     break
-                packet = json.loads(line)
+                packet, image = frame
                 with self.lock:
                     if "error" in packet:
                         self.error = packet["error"]
@@ -236,7 +232,6 @@ class CameraWorker:
                         break
                     if packet["generation"] != self.generation:
                         continue
-                    image = base64.b64decode(packet.pop("image"), validate=True)
                     self.prediction = SimpleNamespace(**packet, preview_image=image)
                     self.updated_at = packet["observed_at"]
                     self.status = packet["status"]
@@ -280,8 +275,7 @@ class CameraWorker:
             process = self.process
             if process is not None and process.poll() is None:
                 try:
-                    process.stdin.write('{"command":"stop"}\n')
-                    process.stdin.flush()
+                    self._send({"command": "stop"})
                 except (OSError, BrokenPipeError):
                     pass
         if self.thread.is_alive():

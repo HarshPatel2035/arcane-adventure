@@ -1,19 +1,23 @@
 """Private camera helper for spell_engine.CameraWorker; run by the game automatically.
 
-Uses JSON lines over pipes so OpenCV and Pygame never share a process on macOS.
-Only the latest camera image is used by the game. stdout is the data channel;
-diagnostics stay on stderr. --synthetic/--max-frames support camera-free checks.
+Runs in its own process so OpenCV and Pygame never share a process on macOS.
+Commands arrive as JSON lines on stdin; frames leave on stdout using the binary
+format in frame_protocol.py. Only the latest camera image is used by the game.
+Anything else that writes to stdout is redirected to stderr so it cannot corrupt
+the data channel. --synthetic/--max-frames support camera-free checks.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import math
+import os
 import sys
 import threading
 import time
+
+from frame_protocol import write_frame
 
 
 def palm_position(hands):
@@ -34,6 +38,12 @@ def main():
     parser.add_argument("--motion", action="store_true")
     parser.add_argument("--max-frames", type=int, default=0)
     args = parser.parse_args()
+    # Keep a private handle to the real stdout pipe, then point fd 1 (and Python's
+    # sys.stdout) at stderr so stray native/library prints become diagnostics.
+    sys.stdout.flush()
+    data = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
     lock = threading.Lock()
     stopped = threading.Event()
     control = {"generation": 0, "reset": False}
@@ -53,8 +63,8 @@ def main():
                     control["reset"] = True
         stopped.set()
 
-    def emit(packet):
-        print(json.dumps(packet, separators=(",", ":")), flush=True)
+    def emit(packet, image=b""):
+        write_frame(data, packet, image)
 
     threading.Thread(target=commands, daemon=True).start()
     cap = None
@@ -143,8 +153,8 @@ def main():
                         "hand_y": hand_y,
                         "motion": motion_action,
                         "latency_ms": prediction.latency_ms,
-                        "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
-                    }
+                    },
+                    encoded.tobytes(),
                 )
                 frames += 1
                 if args.max_frames and frames >= args.max_frames:
@@ -161,6 +171,10 @@ def main():
     finally:
         if cap is not None:
             cap.release()
+        try:
+            data.close()
+        except BrokenPipeError:
+            pass
     return 0
 
 
