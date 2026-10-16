@@ -202,3 +202,15 @@ The bundled model has five classes and no idle class, so unrelated visible poses
 double-click **Collect Idle Gesture.command** and record about 200 relaxed or random
 hand positions, then retrain (see `TRAINING.md`). The game already treats the idle
 class as "no spell".
+
+## License and credits
+
+The code is released under the [MIT License](LICENSE).
+
+- `models/hand_landmarker.task` is Google's
+  [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker)
+  model, redistributed under the Apache License 2.0.
+- `assets/images/enchanted_arena.png` was AI-generated for this project; see
+  `assets/images/ART.md`.
+- `models/gesture_model.pth` and `data/gestures.csv` were trained and recorded for
+  this project. The dataset contains normalized hand-landmark coordinates only, no images.
