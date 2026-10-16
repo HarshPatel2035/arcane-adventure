@@ -286,6 +286,8 @@ class CameraWorker:
 
 
 class SpellGame:
+    spawn_scale = 1.0  # >1 spawns enemies less often (difficulty setting)
+
     def __init__(self, sound=None, seed=None, boss_delay=45):
         self.rng = random.Random(seed)
         self.sound = sound
@@ -673,7 +675,7 @@ class SpellGame:
             self.spawn_enemy()
             self.spawn_timer = max(0.55, 1.65 * 0.86 ** (min(self.level, 8) - 1)) * (
                 1.6 if self.boss else 1
-            )
+            ) * self.spawn_scale
         for enemy in self.enemies:
             enemy.y += enemy.speed * dt
             enemy.x += (self.enemy_target(enemy).x - enemy.x) * 0.22 * dt
@@ -769,11 +771,71 @@ class SpellGame:
         self.rings = [r for r in self.rings if r[2] > 0]
 
 
+# Extended fingers per pose, thumb to pinky, for the spellbook hand drawings.
+POSE_FINGERS = {
+    0: (1, 1, 1, 1, 1),
+    1: (0, 0, 0, 0, 0),
+    2: (0, 1, 1, 0, 0),
+    3: (0, 1, 0, 0, 0),
+    4: (1, 1, 1, 1, 1),
+}
+
+
+def draw_hand(surface, fingers, rect, color, spread=0.07):
+    """Simple palm-facing hand: palm block plus long (extended) or short (folded) fingers."""
+    rect = pygame.Rect(rect)
+    palm = pygame.Rect(0, 0, rect.w * 0.62, rect.h * 0.38)
+    palm.midbottom = (rect.centerx + rect.w * 0.06, rect.bottom)
+    pygame.draw.rect(surface, color, palm, border_radius=max(2, palm.w // 4))
+    width = max(2, rect.w // 10)
+    raised = [index for index, extended in enumerate(fingers[1:]) if extended]
+    center = sum(raised) / len(raised) if raised else 1.5
+    for index, extended in enumerate(fingers[1:]):
+        x = palm.left + palm.w * (0.14 + index * 0.24)
+        length = rect.h * (0.55 if extended else 0.12) * (0.82 if index == 3 else 1)
+        lean = (index - center) * rect.w * spread if extended else 0
+        top = (x + lean, palm.top - length)
+        pygame.draw.line(surface, color, (x, palm.top + width), top, width)
+        pygame.draw.circle(surface, color, top, width / 2)
+    thumb_base = (palm.left + width / 2, palm.top + palm.h * 0.55)
+    thumb_tip = (
+        (rect.left + width / 2, palm.top - rect.h * 0.08)
+        if fingers[0]
+        else (palm.left + palm.w * 0.45, palm.top + palm.h * 0.2)
+    )
+    pygame.draw.line(surface, color, thumb_base, thumb_tip, width)
+    pygame.draw.circle(surface, color, thumb_tip, width / 2)
+
+
+def pose_glyph(pose, size=(28, 30), color=(78, 113, 103), scale=4):
+    """Transparent surface showing the hand pose for a gesture ID (4 = both hands).
+
+    Drawn at `scale`x and smoothly reduced so thin fingers stay distinct.
+    """
+    w, h = size[0] * scale, size[1] * scale
+    big = pygame.Surface((w, h), pygame.SRCALPHA)
+    if pose == 4:
+        right = pygame.Surface((w * 0.52, h), pygame.SRCALPHA)
+        draw_hand(right, POSE_FINGERS[4], right.get_rect().inflate(-scale * 2, -scale), color)
+        big.blit(pygame.transform.flip(right, True, False), (0, 0))
+        big.blit(right, (w - right.get_width(), 0))
+    else:
+        draw_hand(
+            big,
+            POSE_FINGERS[pose],
+            big.get_rect().inflate(-scale * 6, -scale * 2),
+            color,
+            spread=0.2 if pose == 2 else 0.07,
+        )
+    return pygame.transform.smoothscale(big, size)
+
+
 class GameView:
     """Illustrated adventure arena with a parchment spellbook and clear feedback."""
 
     def __init__(self, screen):
         self.screen = screen
+        self.pose_glyphs = {}
         self.fonts = {
             size: pygame.font.SysFont("Avenir Next,Helvetica Neue,Arial", size)
             for size in (11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 30, 34, 42, 52, 60)
@@ -1309,6 +1371,9 @@ class GameView:
                 )
             self.screen.blit(self.icons[spell], (x, y - 3))
             self.text(spell, x + 45, y + 2, 15, self.dark)
+            if index not in self.pose_glyphs:
+                self.pose_glyphs[index] = pose_glyph(index)
+            self.screen.blit(self.pose_glyphs[index], (x + 145, y - 2))
             self.text(gesture, x + 177, y + 3, 12, self.quiet)
             self.text(str(COSTS[spell]), x + 330, y + 3, 13, self.dark)
         pygame.draw.line(self.screen, (221, 216, 198), (x, 685), (1258, 685))

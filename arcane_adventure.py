@@ -39,6 +39,16 @@ COMPANIONS = {
     "spirit": ("Luma the Spirit", "Marks priority targets; combos last 4 seconds."),
 }
 SKINS = {"mint": (71, 160, 175), "gold": (220, 173, 76), "rose": (205, 111, 156)}
+# damage: multiplier on hits to the wizard and the tree; speed: enemy fall speed;
+# spawn: multiplier on the time between spawns (higher = fewer enemies).
+DIFFICULTIES = {
+    "easy": {"label": "Easy", "damage": 0.6, "speed": 0.85, "spawn": 1.3},
+    "normal": {"label": "Normal", "damage": 1.0, "speed": 1.0, "spawn": 1.0},
+    "hard": {"label": "Hard", "damage": 1.4, "speed": 1.15, "spawn": 0.8},
+}
+CALIBRATION_SECONDS = 4.0
+MIN_CALIBRATED_SPAN = 0.2  # fraction of the camera width a sweep must cover
+SCOREBOARD_SIZE = 5
 
 
 @dataclass
@@ -63,7 +73,15 @@ class Portal:
 
 
 def load_profile(path):
-    defaults = {"wins": 0, "guardians": 0, "best": 0, "skin": "mint"}
+    defaults = {
+        "wins": 0,
+        "guardians": 0,
+        "best": 0,
+        "skin": "mint",
+        "difficulty": "normal",
+        "calibration": None,
+        "scores": [],
+    }
     if path is None:
         return defaults
     try:
@@ -72,9 +90,43 @@ def load_profile(path):
             defaults[key] = max(0, int(data.get(key, 0)))
         if data.get("skin") in SKINS:
             defaults["skin"] = data["skin"]
+        if data.get("difficulty") in DIFFICULTIES:
+            defaults["difficulty"] = data["difficulty"]
+        defaults["calibration"] = valid_calibration(data.get("calibration"))
+        defaults["scores"] = [
+            entry for entry in map(valid_score, data.get("scores", [])) if entry
+        ][:SCOREBOARD_SIZE]
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     return defaults
+
+
+def valid_calibration(value):
+    """Return [low, high] palm-x bounds, or None if missing or unusable."""
+    try:
+        low, high = (float(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= low < high <= 1 and math.isfinite(low + high)):
+        return None
+    return [low, high] if high - low >= MIN_CALIBRATED_SPAN else None
+
+
+def valid_score(entry):
+    try:
+        score = {
+            "score": max(0, int(entry["score"])),
+            "mode": str(entry["mode"]),
+            "difficulty": str(entry["difficulty"]),
+            "stage": max(1, min(5, int(entry.get("stage", 1)))),
+            "won": bool(entry.get("won", False)),
+            "date": str(entry.get("date", ""))[:10],
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if score["mode"] not in ("adventure", "endless"):
+        return None
+    return score if score["difficulty"] in DIFFICULTIES else None
 
 
 class AdventureGame(base.SpellGame):
@@ -87,6 +139,7 @@ class AdventureGame(base.SpellGame):
         motion=False,
         practice=False,
         profile_path=None,
+        difficulty=None,
     ):
         self.mode = mode
         self.companion = companion
@@ -94,6 +147,10 @@ class AdventureGame(base.SpellGame):
         self.practice = practice
         self.profile_path = profile_path
         self.profile = load_profile(profile_path)
+        self.difficulty = difficulty or self.profile["difficulty"]
+        self.calibration = self.profile["calibration"]
+        self.calibration_message = ""
+        self.camera_available = True
         self.skin = (
             self.profile["skin"]
             if self.profile["skin"] in self.unlocked_skins()
@@ -112,6 +169,8 @@ class AdventureGame(base.SpellGame):
     def save_profile(self):
         self.profile["best"] = max(self.profile["best"], self.score)
         self.profile["skin"] = self.skin
+        self.profile["difficulty"] = self.difficulty
+        self.profile["calibration"] = self.calibration
         if self.profile_path is None:
             return
         try:
@@ -157,6 +216,9 @@ class AdventureGame(base.SpellGame):
         self.motion_last = dict.fromkeys(("sweep", "circle", "charge"), float("-inf"))
         self.feedback = "Show a pose to cast; move your hand to steer."
         self.save_error = None
+        self.run_recorded = False
+        self.new_record = False
+        self.spawn_scale = DIFFICULTIES[self.difficulty]["spawn"]
         self.next_boss_at = (
             5 if self.practice else float("inf") if self.mode == "adventure" else 45
         )
@@ -235,6 +297,81 @@ class AdventureGame(base.SpellGame):
         self.notify(name + " learned!")
         return True
 
+    def cycle_difficulty(self):
+        names = list(DIFFICULTIES)
+        self.difficulty = names[(names.index(self.difficulty) + 1) % len(names)]
+        self.save_profile()
+
+    def record_run(self):
+        """Add a finished run to the saved top scores once; returns the board."""
+        if self.run_recorded or self.state not in ("gameover", "victory"):
+            return self.profile["scores"]
+        self.run_recorded = True
+        entry = {
+            "score": int(self.score),
+            "mode": self.mode,
+            "difficulty": self.difficulty,
+            "stage": self.stage + 1,
+            "won": self.state == "victory",
+            "date": time.strftime("%Y-%m-%d"),
+        }
+        board = sorted(
+            self.profile["scores"] + [entry], key=lambda item: -item["score"]
+        )[:SCOREBOARD_SIZE]
+        self.new_record = board[0] is entry and entry["score"] > 0
+        self.profile["scores"] = board
+        self.save_profile()
+        return board
+
+    def begin_calibration(self):
+        if self.state != "start":
+            return
+        if not self.camera_available:
+            self.calibration_message = "Calibration needs the camera (run without --no-camera)."
+            return
+        self.state = "calibrate"
+        self.calibration_samples = []
+        self.calibration_started = None
+        self.calibration_live = None
+
+    def add_calibration_sample(self, x, now):
+        if self.state != "calibrate" or x is None or not math.isfinite(x):
+            return
+        if self.calibration_started is None:
+            self.calibration_started = now
+        self.calibration_samples.append(x)
+        self.calibration_live = x
+        if now - self.calibration_started >= CALIBRATION_SECONDS:
+            self.finish_calibration()
+
+    def calibration_progress(self, now):
+        if self.state != "calibrate" or self.calibration_started is None:
+            return 0.0
+        return max(0.0, min(1.0, (now - self.calibration_started) / CALIBRATION_SECONDS))
+
+    def finish_calibration(self):
+        xs = sorted(self.calibration_samples)
+        # Trim the extreme 5% on each side so one tracking glitch cannot set the range.
+        found = (
+            valid_calibration([xs[round(0.05 * (len(xs) - 1))], xs[round(0.95 * (len(xs) - 1))]])
+            if len(xs) >= 10
+            else None
+        )
+        if found:
+            self.calibration = found
+            self.calibration_message = "Hand range saved: your reach now spans the arena."
+            self.save_profile()
+        else:
+            self.calibration_message = "Not enough movement. Try a wider, slower sweep."
+        self.state = "start"
+
+    def map_hand(self, x):
+        """Stretch the calibrated palm range to the full 0-1 arena width."""
+        if x is None or self.calibration is None or not math.isfinite(x):
+            return x
+        low, high = self.calibration
+        return max(0.0, min(1.0, (x - low) / (high - low)))
+
     def spawn_enemy(self):
         if (
             self.mode == "adventure"
@@ -267,6 +404,7 @@ class AdventureGame(base.SpellGame):
         )
         enemy.exposed_until = 0
         enemy.heal_at = self.elapsed + 3
+        first_new = len(self.enemies)
         self.enemies.append(enemy)
         if kind == "swarm":
             for offset in (-26, 26):
@@ -281,6 +419,8 @@ class AdventureGame(base.SpellGame):
                 small.hp = small.max_hp = 1
                 small.exposed_until = 0
                 self.enemies.append(small)
+        for new in self.enemies[first_new:]:
+            new.speed *= DIFFICULTIES[self.difficulty]["speed"]
 
     def enemy_target(self, enemy):
         if getattr(enemy, "kind", "") == "boss_crystal":
@@ -294,7 +434,9 @@ class AdventureGame(base.SpellGame):
             return
         if self.mode == "adventure" and self.stage == 2 and enemy.y >= 430:
             self.enemies.remove(enemy)
-            self.tree_health = max(0, self.tree_health - 12)
+            self.tree_health = max(
+                0, self.tree_health - round(12 * DIFFICULTIES[self.difficulty]["damage"])
+            )
             self.notify("Heart Tree hit! Push enemies away or clear them")
             if self.tree_health == 0:
                 self.state = "gameover"
@@ -338,7 +480,7 @@ class AdventureGame(base.SpellGame):
             self.burst(self.player, (255, 185, 93), 20)
             self.notify("Ember blocked a hit!")
             return
-        super().hurt(damage)
+        super().hurt(max(1, round(damage * DIFFICULTIES[self.difficulty]["damage"])))
 
     def cast(self, spell):
         start = len(self.projectiles)
@@ -1137,13 +1279,17 @@ class AdventureView(base.GameView):
                     SKINS[name],
                     12,
                 )
-            self.button(
-                "motion",
-                "Motion spells: " + ("ON" if game.motion_enabled else "OFF") + "  /  O",
-                (239, 455, 392, 34),
-                (93, 132, 110),
-                13,
-            )
+            for i, (key, label) in enumerate(
+                (
+                    ("motion", "Motion " + ("ON" if game.motion_enabled else "OFF") + " / O"),
+                    ("difficulty", DIFFICULTIES[game.difficulty]["label"] + " / F"),
+                    (
+                        "calibrate",
+                        ("Recalibrate" if game.calibration else "Calibrate") + " / C",
+                    ),
+                )
+            ):
+                self.button(key, label, (239 + i * 132, 455, 124, 34), (93, 132, 110), 12)
             self.button(
                 "primary",
                 "Begin adventure  /  SPACE",
@@ -1158,6 +1304,56 @@ class AdventureView(base.GameView):
                 11,
                 self.quiet,
                 True,
+            )
+        elif game.state == "calibrate":
+            now = time.monotonic()
+            self.text("Calibrate your reach", 435, 166, 34, self.dark, True, True)
+            self.text(
+                "Hold an open palm and sweep slowly from your far left to far right.",
+                435,
+                217,
+                15,
+                self.quiet,
+                True,
+            )
+            track = pygame.Rect(175, 300, 520, 16)
+            pygame.draw.rect(self.screen, (226, 230, 213), track, border_radius=8)
+            if game.calibration_samples:
+                low, high = min(game.calibration_samples), max(game.calibration_samples)
+                covered = pygame.Rect(
+                    track.x + low * track.w, track.y, max(4, (high - low) * track.w), track.h
+                )
+                pygame.draw.rect(self.screen, (87, 176, 146), covered, border_radius=8)
+            if game.calibration_live is not None:
+                pygame.draw.circle(
+                    self.screen,
+                    (204, 157, 68),
+                    (track.x + game.calibration_live * track.w, track.centery),
+                    11,
+                )
+            self.text("Camera left", track.x, track.bottom + 10, 11, self.quiet)
+            self.text("Camera right", track.right - 70, track.bottom + 10, 11, self.quiet)
+            progress = game.calibration_progress(now)
+            bar = pygame.Rect(275, 400, 320, 10)
+            pygame.draw.rect(self.screen, (226, 230, 213), bar, border_radius=5)
+            pygame.draw.rect(
+                self.screen,
+                (45, 122, 103),
+                (bar.x, bar.y, bar.w * progress, bar.h),
+                border_radius=5,
+            )
+            self.text(
+                "Show your hand to start the timer."
+                if game.calibration_started is None
+                else f"Keep sweeping... {CALIBRATION_SECONDS * (1 - progress):.1f}s",
+                435,
+                425,
+                13,
+                self.quiet,
+                True,
+            )
+            self.button(
+                "camp", "Cancel  /  C", (239, 518, 392, 52), (103, 130, 110), 15
             )
         elif game.state == "upgrade":
             self.text("Choose your next magic", 435, 166, 34, self.dark, True, True)
@@ -1294,20 +1490,30 @@ class AdventureView(base.GameView):
             self.text(
                 "Learned: " + (", ".join(sorted(game.upgrades)) or "No upgrades yet"),
                 435,
-                445,
+                438,
                 11,
                 self.quiet,
                 True,
             )
-            if win:
+            board = game.profile["scores"][:3]
+            if board:
                 self.text(
-                    "Gold robe unlocked! Return to camp to equip it.",
+                    "Top runs:   "
+                    + "   ".join(
+                        f"{i + 1}. {entry['score']} {DIFFICULTIES[entry['difficulty']]['label']}"
+                        for i, entry in enumerate(board)
+                    ),
                     435,
-                    480,
-                    13,
-                    (147, 111, 46),
+                    465,
+                    12,
+                    self.dark,
                     True,
                 )
+            notes = (["New high score!"] if game.new_record else []) + (
+                ["Gold robe unlocked! Return to camp to equip it."] if win else []
+            )
+            if notes:
+                self.text("  ".join(notes), 435, 490, 13, (147, 111, 46), True)
             self.button(
                 "primary", "Play again  /  R", (169, 518, 255, 52), (45, 122, 103), 15
             )
@@ -1415,7 +1621,7 @@ class AdventureView(base.GameView):
             self.text(
                 (
                     "Combat paused"
-                    if game.state in ("paused", "upgrade", "start")
+                    if game.state in ("paused", "upgrade", "start", "calibrate")
                     else (
                         "Adventure complete"
                         if game.state == "victory"
@@ -1431,7 +1637,9 @@ class AdventureView(base.GameView):
                 "Hand position selects a card; release pose, then fist confirms."
                 if game.state == "upgrade"
                 else (
-                    "Choose your settings, then press Space."
+                    "Sweep your hand across the camera view; C cancels."
+                    if game.state == "calibrate"
+                    else (game.calibration_message or "Choose your settings, then press Space.")
                     if game.state == "start"
                     else (
                         "P resumes. Gestures cannot cast while paused."
@@ -1441,7 +1649,7 @@ class AdventureView(base.GameView):
                 )
             )
             self.wrapped(note, 907, 386, 335, 12, max_lines=2)
-        if game.state in ("upgrade", "victory"):
+        if game.state in ("upgrade", "victory", "calibrate"):
             # These states are new to the base view; draw their blocking overlay here.
             self.overlay(game)
 
@@ -1450,11 +1658,16 @@ def apply_input(game, snapshot, now=None):
     now = time.monotonic() if now is None else now
     pred, stamp, events, error, status = snapshot
     fresh = pred is not None and error is None and 0 <= now - stamp <= 0.7
+    if game.state == "calibrate":
+        game.move_target = None
+        if fresh:
+            game.add_calibration_sample(getattr(pred, "hand_x", None), now)
+        return
     if game.state == "upgrade":
         game.move_target = None
         if not fresh:
             return
-        x = getattr(pred, "hand_x", None)
+        x = game.map_hand(getattr(pred, "hand_x", None))
         if pred.gesture_id != 1:
             game.menu_confirm_ready = True
         if x is None:
@@ -1483,7 +1696,7 @@ def apply_input(game, snapshot, now=None):
     if not fresh:
         game.set_hand(None)
         return
-    game.set_hand(getattr(pred, "hand_x", None), getattr(pred, "hand_y", None))
+    game.set_hand(game.map_hand(getattr(pred, "hand_x", None)), getattr(pred, "hand_y", None))
     for spell, observed, generation in events:
         if not 0 <= now - observed <= 0.5:
             continue
@@ -1510,8 +1723,15 @@ def handle_button(game, key):
             game.state = "playing"
         elif game.state in ("start", "gameover", "victory"):
             game.reset()
-    elif key == "camp" and game.state in ("gameover", "victory"):
+    elif key == "camp" and game.state in ("gameover", "victory", "calibrate"):
         game.state = "start"
+    elif key == "calibrate":
+        if game.state == "calibrate":
+            game.state = "start"
+        else:
+            game.begin_calibration()
+    elif key == "difficulty" and game.state == "start":
+        game.cycle_difficulty()
     elif key == "pause" and game.state in ("playing", "paused"):
         game.state = "paused" if game.state == "playing" else "playing"
     elif key == "motion" and game.state in ("start", "paused"):
@@ -1550,7 +1770,9 @@ def run_adventure(args):
             motion=getattr(args, "motion", False),
             practice=args.boss_practice,
             profile_path=base.ROOT / "reports" / "adventure_profile.json",
+            difficulty=getattr(args, "difficulty", None),
         )
+        game.camera_available = not args.no_camera
         view = AdventureView(screen)
         clock = pygame.time.Clock()
         if not args.no_camera:
@@ -1576,6 +1798,10 @@ def run_adventure(args):
                         handle_button(game, "pause")
                     elif key == pygame.K_o:
                         handle_button(game, "motion")
+                    elif key == pygame.K_c:
+                        handle_button(game, "calibrate")
+                    elif key == pygame.K_f:
+                        handle_button(game, "difficulty")
                     elif key == pygame.K_m:
                         sound.muted = not sound.muted
                     elif game.state == "upgrade":
@@ -1630,7 +1856,7 @@ def run_adventure(args):
                 if worker:
                     worker.reset()
                 if game.state in ("gameover", "victory"):
-                    game.save_profile()
+                    game.record_run()
             view.draw(game, snapshot, clock.get_fps(), args.no_camera, sound.muted)
             pygame.display.flip()
             frames += 1
@@ -1644,6 +1870,7 @@ def run_adventure(args):
             try:
                 report = {
                     "mode": game.mode,
+                    "difficulty": game.difficulty,
                     "state": game.state,
                     "stage": game.stage + 1,
                     "score": game.score,
@@ -1675,6 +1902,11 @@ def parse_args(argv=None):
     parser.add_argument("--mode", choices=("adventure", "endless"), default="adventure")
     parser.add_argument(
         "--companion", choices=("owl", "dragon", "spirit"), default="owl"
+    )
+    parser.add_argument(
+        "--difficulty",
+        choices=tuple(DIFFICULTIES),
+        help="Override the saved difficulty (also selectable at camp with F)",
     )
     parser.add_argument(
         "--motion",
