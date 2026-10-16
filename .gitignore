@@ -1,0 +1,14 @@
+# Environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Per-player state written by the game
+reports/adventure_profile.json
+reports/game_last_run.json
+*.tmp

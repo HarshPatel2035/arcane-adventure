@@ -1,0 +1,100 @@
+{
+  "test_accuracy": 0.9866666666666667,
+  "test_loss": 0.04618477331312534,
+  "best_epoch": 47,
+  "best_val_loss": 0.001792029092419701,
+  "epochs_run": 50,
+  "model_only_latency_ms": 0.02185583500249777,
+  "training_seconds": 2.786645000000135,
+  "split_mode": "blocked",
+  "split_sizes": [
+    700,
+    150,
+    150
+  ],
+  "dataset_sha256": "7f909bac82e25c05862f412e8f9b653ad79f95080d0de0cdeba1b09f1dcc1757",
+  "exact_duplicates_removed": 0,
+  "classification_report": {
+    "Open Palm": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 30.0
+    },
+    "Closed Fist": {
+      "precision": 0.967741935483871,
+      "recall": 1.0,
+      "f1-score": 0.9836065573770492,
+      "support": 30.0
+    },
+    "Peace Sign": {
+      "precision": 1.0,
+      "recall": 0.9666666666666667,
+      "f1-score": 0.9830508474576272,
+      "support": 30.0
+    },
+    "Pointing": {
+      "precision": 0.9666666666666667,
+      "recall": 0.9666666666666667,
+      "f1-score": 0.9666666666666667,
+      "support": 30.0
+    },
+    "Both Hands Open": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 30.0
+    },
+    "accuracy": 0.9866666666666667,
+    "macro avg": {
+      "precision": 0.9868817204301076,
+      "recall": 0.9866666666666667,
+      "f1-score": 0.9866648143002686,
+      "support": 150.0
+    },
+    "weighted avg": {
+      "precision": 0.9868817204301075,
+      "recall": 0.9866666666666667,
+      "f1-score": 0.9866648143002686,
+      "support": 150.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      30,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      30,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      29,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      29,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      30
+    ]
+  ],
+  "limitation": "Same recording dataset; evaluate on new people and separate sessions."
+}

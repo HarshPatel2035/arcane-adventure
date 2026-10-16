@@ -1,0 +1,43 @@
+{
+  "architecture": {
+    "input": 126,
+    "hidden": [
+      128,
+      64
+    ],
+    "dropout": 0.3,
+    "num_classes": 5
+  },
+  "class_ids": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "class_names": [
+    "Open Palm",
+    "Closed Fist",
+    "Peace Sign",
+    "Pointing",
+    "Both Hands Open"
+  ],
+  "feature_contract": {
+    "input_features": 126,
+    "hand_slots": [
+      "Left",
+      "Right"
+    ],
+    "landmarks_per_hand": 21,
+    "coordinates": [
+      "x",
+      "y",
+      "z"
+    ],
+    "mirrored_camera": true,
+    "normalization": "subtract wrist; divide by 3D wrist-to-middle-MCP (index 9) distance",
+    "missing_hand": "63 zeros"
+  },
+  "best_epoch": 47,
+  "seed": 42
+}
