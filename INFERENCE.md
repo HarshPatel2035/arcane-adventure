@@ -8,7 +8,7 @@ cd "$HOME/Desktop/Hand Gesture Game "
 ./.venv/bin/python inference.py
 ```
 
-All dependencies are already installed in the project's `.venv`. `requirements-training.txt`
+All dependencies are already installed in the project's `.venv`. `requirements.txt`
 records the tested environment. The local detector and trained weights are required:
 `models/hand_landmarker.task`, `models/gesture_model.pth`, `models/gesture_model.json`.
 The script runs offline and does not change your collected data or train a model.

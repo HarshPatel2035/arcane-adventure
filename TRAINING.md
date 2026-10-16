@@ -7,7 +7,7 @@ Run from this folder:
 ```
 
 Or double-click `Train Gesture Model.command`. Training libraries are installed in `.venv`.
-To recreate that environment, install `requirements-training.txt` with its Python 3.13 interpreter.
+To recreate that environment, install `requirements.txt` with Python 3.13.
 
 The script validates `data/gestures.csv`, removes exact duplicates, rejects conflicting labels,
 and splits each gesture into contiguous 70% training, 15% validation and 15% test sections.
@@ -24,6 +24,35 @@ Training-only augmentation applies small rotations, noise and reflection with Le
 swapping. Missing hand slots stay zero. Recentring and scaling preserve the collector's wrist
 and hand-size invariants; translation and uniform scale themselves cancel under normalization.
 Validation and test features are not augmented.
+
+## Recommended: add an idle class
+
+Without an idle class, any visible hand gets one of the five spell labels. Record idle
+examples (relaxed hands, scratching your face, reaching for keys, half-made poses):
+
+```bash
+./.venv/bin/python collect_data.py --guided --include-idle
+```
+
+or double-click `Collect Idle Gesture.command`. Guided mode collects only unfinished
+labels, so it records label 5 up to 200 samples. Then retrain. The game and
+`inference.py` treat idle as "no spell".
+
+## Honest accuracy: a separate session
+
+The default split comes from one recording, so the test score is optimistic. Record a
+second session (different day, lighting, other hand or another person) into its own
+file, keep it out of training, and score the model on it:
+
+```bash
+./.venv/bin/python collect_data.py --guided --output data/session2.csv --target 60
+./.venv/bin/python train_model.py --holdout data/session2.csv
+```
+
+The holdout accuracy, confusion matrix and report are printed and saved under
+`holdout` in `reports/training/metrics.json`. A holdout file may cover only some
+gestures. If holdout accuracy is much lower than test accuracy, add varied
+samples to `data/gestures.csv` and retrain.
 
 ## Outputs
 
@@ -44,7 +73,7 @@ model/report outputs but does not change the collected dataset.
 ## Options and troubleshooting
 
 `--epochs 100`, `--patience 15`, `--no-augmentation`, `--seed 42`, `--threads 2`,
-`--data PATH`, `--model PATH`, and `--reports PATH` customize training.
+`--data PATH`, `--model PATH`, `--reports PATH` and `--holdout PATH` customize training.
 
 If dependencies are missing or Python crashes, use `.venv/bin/python` rather than Anaconda base.
 An empty dataset or missing gesture class requires collecting more samples. If accuracy is low,

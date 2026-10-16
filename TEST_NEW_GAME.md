@@ -43,6 +43,14 @@ companion at camp; press Space. Start with motion spells OFF.
     objects should freeze, then resume cleanly. Try Endless from camp and verify another
     guardian appears after defeat and upgrade selection.
 
+11. **Calibration and difficulty:** at camp press C and sweep an open palm across your
+    comfortable range for 4 seconds. Start a run: reaching your comfortable edge
+    should move the wizard to the arena wall. Press F to try Easy and Hard; Hard
+    hits should hurt more and enemies should arrive faster. Relaunch and check
+    both settings are remembered.
+12. **Top scores:** finish two runs. The end screen should list the top runs and show
+    "New high score!" only when you beat the best saved score.
+
 Quick guardian check:
 
 ```bash

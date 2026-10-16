@@ -1,5 +1,7 @@
 # Arcane Adventure — The Enchanted Grove
 
+![Keyboard-mode gameplay demo](docs/demo.gif)
+
 A local webcam-controlled spellcasting adventure. The existing trained five-gesture
 model controls spells; mirrored palm position controls movement and interactive props.
 The camera/model runs in a separate helper process to avoid the macOS OpenCV/Pygame
@@ -14,13 +16,11 @@ cd "$HOME/Desktop/Hand Gesture Game "
 ./.venv/bin/python arcane_adventure.py
 ```
 
-Or double-click **Play Adventure Edition.command**. It launches `arcane_adventure.py`
-directly so an older copy of `gesture_game.py` cannot bring back the old game.
-`gesture_game_adventure.py` also forwards its command-line launch to this adventure.
-`gesture_game_combat_backup.py` preserves the previous combat edition.
+Or double-click **Play Adventure Edition.command**.
 
 The window title is **Arcane Adventure - The Enchanted Grove**. At camp choose Adventure
-or Endless, a companion, an unlocked robe, and optional motion spells. Press Space to begin.
+or Endless, a companion, an unlocked robe, optional motion spells (O), difficulty (F)
+and hand calibration (C). Press Space to begin.
 
 ```bash
 ./.venv/bin/python arcane_adventure.py --no-camera
@@ -29,11 +29,46 @@ or Endless, a companion, an unlocked robe, and optional motion spells. Press Spa
 ./.venv/bin/python arcane_adventure.py --motion
 ```
 
-Other options: `--camera 1`, `--mute`, `--seed 42`, `--max-frames N`.
+Other options: `--camera 1`, `--mute`, `--seed 42`, `--max-frames N`,
+`--difficulty easy|normal|hard`.
 Use the existing `.venv/bin/python` rather than Anaconda base. Required model files are
 `models/gesture_model.pth`, its matching JSON metadata, and `models/hand_landmarker.task`.
-Dependencies are listed in `requirements.txt`. Artwork remains bundled locally in
-`assets/images`; provenance is in `assets/images/ART.md`.
+Artwork remains bundled locally in `assets/images`; provenance is in `assets/images/ART.md`.
+
+## Project layout
+
+| File | Role |
+|---|---|
+| `arcane_adventure.py` | The game: encounters, upgrades, props, camp/end screens, CLI entry point |
+| `spell_engine.py` | Shared engine: combat rules, camera worker, sound, base HUD |
+| `game_camera.py` | Camera helper process (OpenCV + MediaPipe + classifier) |
+| `frame_protocol.py` | Binary frame format between the helper and the game |
+| `motion_controls.py` | Optional geometry-based motion spells |
+| `collect_data.py` / `train_model.py` / `inference.py` | Data collection, training, live recognizer |
+| `tests/` | pytest suite (headless) |
+| `tools/make_demo_gif.py` | Regenerates `docs/demo.gif` |
+
+## Setup
+
+```bash
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+`requirements.txt` pins the exact tested versions. `pyproject.toml` lists the direct
+dependencies, with optional `train` and `dev` groups.
+
+## Difficulty, calibration and top scores
+
+- **Difficulty** (F at camp, or `--difficulty`): Easy takes 60% damage, enemies move at
+  85% speed and spawn 30% less often. Hard takes 140% damage, enemies move at 115% speed
+  and spawn 20% more often. Normal is the original balance. The choice is saved.
+- **Calibration** (C at camp, camera required): hold an open palm and sweep from your
+  comfortable far left to far right for 4 seconds. Your range then spans the whole
+  arena, so you need not reach the edge of the camera view. Recalibrate any time; a sweep
+  that covers less than 20% of the view is rejected.
+- **Top scores**: the five best finished runs (score, difficulty, mode) are saved and the
+  top three appear on the end screen, with a "New high score!" message for a new record.
 
 ## Controls
 
@@ -138,24 +173,30 @@ Live tracking sensitivity and physical gesture timing need a play-through on you
 
 ## Checks
 
-See `TEST_NEW_GAME.md` for the user play-through checklist. Automated checks:
+See `TEST_NEW_GAME.md` for the user play-through checklist. Automated checks run
+headless (no window, audio or webcam):
 
 ```bash
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./.venv/bin/python -B test_adventure_features.py
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./.venv/bin/python -B test_adventure_run.py
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./.venv/bin/python -B test_adventure_camera.py
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./.venv/bin/python -B test_adventure_edges.py
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./.venv/bin/python -B test_game_combat.py
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./.venv/bin/python -B test_game_movement.py
+./.venv/bin/python -m pytest
+./.venv/bin/python -m ruff check .
 ```
+
+GitHub Actions (`.github/workflows/tests.yml`) runs both on every push once the project
+is pushed to GitHub.
 
 Checks cover route progression/victory, real reflected-shot collision, upgrade effects,
 menu isolation, enemy tactics, objectives, boss phases, object controls, companions,
-motion trajectories and negative cases, saved unlocks, all screens, and real-model
-synthetic-camera transport. The full-route stress run restores player health to isolate
+motion trajectories and negative cases, saved unlocks, all screens, real-model
+synthetic-camera transport, the binary frame protocol, idle-class handling, difficulty,
+calibration and the score board. The full-route stress run restores player health to isolate
 progression; it is not evidence that difficulty is balanced. Physical gestures, actual
 webcam conditions, audio playback and gameplay balance still need manual testing.
 
 If the camera fails, close competing camera apps and allow camera access for Terminal in
-macOS Privacy & Security. Keyboard/mouse controls remain available. This model has five
-classes without an idle class, so unusual visible poses may be interpreted as spells.
+macOS Privacy & Security. Keyboard/mouse controls remain available.
+
+The bundled model has five classes and no idle class, so unrelated visible poses
+(scratching your face, reaching for the keyboard) may be read as spells. To fix this,
+double-click **Collect Idle Gesture.command** and record about 200 relaxed or random
+hand positions, then retrain (see `TRAINING.md`). The game already treats the idle
+class as "no spell".
